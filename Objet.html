@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="fr">
+	<head>
+		<title>Structurer le Parcours du Joueur à Travers l'Architecture</title>
+		<meta charset=utf-8 />
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="src/style.css">
+	</head>
+	<body>
+		<div id="container">
+		</div>
+		<script type="module">
+
+			import * as THREE from 'three';
+			import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+			import { Octree } from 'three/addons/math/Octree.js';
+			import { OctreeHelper } from 'three/addons/helpers/OctreeHelper.js';
+			import { Capsule } from 'three/addons/math/Capsule.js';
+
+			const clock = new THREE.Clock();
+
+			const scene = new THREE.Scene();
+			scene.background = new THREE.Color( 0x000000 );
+
+			const camera = new THREE.PerspectiveCamera( 70, window.innerWidth / window.innerHeight, 0.1, 1000 );
+			camera.rotation.order = 'YXZ';
+
+			const container = document.getElementById( 'container' );
+
+			const renderer = new THREE.WebGLRenderer( { antialias: true } );
+			renderer.setPixelRatio( window.devicePixelRatio );
+			renderer.setSize( window.innerWidth, window.innerHeight );
+			renderer.setAnimationLoop( animate );
+			renderer.shadowMap.enabled = true;
+			renderer.shadowMap.type = THREE.VSMShadowMap;
+			renderer.toneMapping = THREE.ACESFilmicToneMapping;
+			container.appendChild( renderer.domElement );
+
+			const GRAVITY = 30;
+
+			const STEPS_PER_FRAME = 5;
+			
+			let windowHasFocus = true;
+			
+			const worldOctree = new Octree();
+
+			const playerCollider = new Capsule( new THREE.Vector3( 0, 0.35, 0 ), new THREE.Vector3( 0, 1, 0 ), 0.35 );
+
+			const playerVelocity = new THREE.Vector3();
+			const playerDirection = new THREE.Vector3();
+
+			let windowObjectReference;
+			let playerOnFloor = false;
+			let mouseTime = 0;
+
+			const keyStates = {};
+
+			document.addEventListener( 'keydown', ( event ) => {
+
+				keyStates[ event.code ] = true;
+
+			} );
+
+			document.addEventListener( 'keyup', ( event ) => {
+
+				keyStates[ event.code ] = false;
+
+			} );
+
+			container.addEventListener( 'mousedown', () => {
+
+				document.body.requestPointerLock();
+
+				mouseTime = performance.now();
+
+			} );
+
+			document.body.addEventListener( 'mousemove', ( event ) => {
+
+				if ( document.pointerLockElement === document.body ) {
+
+					camera.rotation.y -= event.movementX / 500;
+					camera.rotation.x -= event.movementY / 500;
+
+				}
+
+			} );
+
+			window.addEventListener( 'resize', onWindowResize );
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			function playerCollisions() {
+
+				const result = worldOctree.capsuleIntersect( playerCollider );
+
+				playerOnFloor = false;
+
+				if ( result ) {
+
+					playerOnFloor = result.normal.y > 0;
+
+					if ( ! playerOnFloor ) {
+
+						playerVelocity.addScaledVector( result.normal, - result.normal.dot( playerVelocity ) );
+
+					}
+
+					if ( result.depth >= 1e-10 ) {
+
+						playerCollider.translate( result.normal.multiplyScalar( result.depth ) );
+
+					}
+
+				}
+
+			}
+
+			function updatePlayer( deltaTime ) {
+
+				let damping = Math.exp( - 4 * deltaTime ) - 1;
+
+				if ( ! playerOnFloor ) {
+
+					playerVelocity.y -= GRAVITY * deltaTime;
+
+					// small air resistance
+					damping *= 0.1;
+
+				}
+
+				playerVelocity.addScaledVector( playerVelocity, damping );
+
+				const deltaPosition = playerVelocity.clone().multiplyScalar( deltaTime );
+				playerCollider.translate( deltaPosition );
+
+				playerCollisions();
+
+				camera.position.copy( playerCollider.end );
+
+			}
+
+			function getForwardVector() {
+
+				camera.getWorldDirection( playerDirection );
+				playerDirection.y = 0;
+				playerDirection.normalize();
+
+				return playerDirection;
+
+			}		
+
+			function getSideVector() {
+
+				camera.getWorldDirection( playerDirection );
+				playerDirection.y = 0;
+				playerDirection.normalize();
+				playerDirection.cross( camera.up );
+
+				return playerDirection;
+
+			}
+
+			function resetKeyStates() {
+				for (const key in keyStates) {
+					keyStates[key] = false;
+				}
+			}
+
+			// Écouteurs pour détecter si la fenêtre est active ou non
+			window.addEventListener('blur', () => {
+				windowHasFocus = false;
+			});
+
+			window.addEventListener('focus', () => {
+				windowHasFocus = true;
+				resetKeyStates(); // Réinitialise les touches lors du retour sur la fenêtre
+			});
+
+			// Modifiez vos contrôles pour vérifier si la fenêtre a le focus
+			function controls(deltaTime) {
+				if (!windowHasFocus) return; // Si la fenêtre n'est pas active, ne pas traiter les contrôles
+
+				// Donne un peu de contrôle dans les airs
+				const speedDelta = deltaTime * (playerOnFloor ? 25 : 8);
+
+				if (keyStates['KeyW']) {
+					playerVelocity.add(getForwardVector().multiplyScalar(speedDelta));
+				}
+
+				if (keyStates['KeyS']) {
+					playerVelocity.add(getForwardVector().multiplyScalar(-speedDelta));
+				}
+
+				if (keyStates['KeyA']) {
+					playerVelocity.add(getSideVector().multiplyScalar(-speedDelta));
+				}
+
+				if (keyStates['KeyD']) {
+					playerVelocity.add(getSideVector().multiplyScalar(speedDelta));
+				}
+
+				if (playerOnFloor) {
+					if (keyStates['Space']) {
+						playerVelocity.y = 10;
+					}
+				}
+			}
+
+			const loader = new GLTFLoader().setPath('./models/gltf/');
+			
+			loader.load('Memoir.glb', (gltf) => {
+				gltf.scene.traverse((child) => {
+
+				});
+				scene.add(gltf.scene);
+				createLights(scene);
+				worldOctree.fromGraphNode(gltf.scene);
+			});
+			
+			function teleportPlayerIfOob() {
+				
+				if ( camera.position.y <= - 5 ) {
+					
+					playerCollider.start.set( 0, 0.35, 0 );
+					playerCollider.end.set( 0, 1, 0 );
+					playerCollider.radius = 0.35;
+					camera.position.copy( playerCollider.end );
+					camera.rotation.set( 0, 0, 0 );
+					
+				}				
+
+			}	
+			
+			// Lumières
+			let lightsGroup1 = []; // Lumières initiales
+			let lightsGroup2 = []; // Nouvelles lumières
+			let lightsGroup3 = []; // Lumières finales
+			let lightsGroup4 = []; // Lumières finales
+			let lightsGroup5 = []; // Lumières finales
+			let lightsGroup6 = []; // Lumières finales
+			
+			function createLights(scene) {
+				
+				// Groupe 1 : Lumières initiales
+				const lightConfigs1 = [
+					{ color: 0xffffff, intensity: 25, position: [-4, 3, 6] },
+					{ color: 0xffffff, intensity: 6.25, position: [ -4, 3, -10] },
+					{ color: 0xffffff, intensity: 12.5, position: [ -4, 3, -26] },
+					{ color: 0xffffff, intensity: 3.275, position: [ -4, 3, -42] },
+					{ color: 0xffffff, intensity: 25, position: [ -4, 3, -58] },
+					{ color: 0xffffff, intensity: 3.275, position: [ -4, 3, -74] },
+					{ color: 0x00ff00, intensity: 3.275, position: [ 2, 2, 0] },
+					{ color: 0x00ff00, intensity: 25, position: [ 2, 2, -64.5] },
+				];
+				
+				lightConfigs1.forEach(config => {
+					const light = new THREE.PointLight(config.color, config.intensity, 0);
+					light.position.set(...config.position);
+					lightsGroup1.push(light); // Ajouter au groupe 1
+					scene.add(light);
+				});
+
+				// Groupe 2 : Nouvelles lumières
+				const lightConfigs2 = [
+					{ color: 0xffffff, intensity: 100, position: [4, 3, -70] },
+					{ color: 0xffffff, intensity: 100, position: [4, 3, -45] },
+					{ color: 0xffffff, intensity: 200, position: [14, 5, -57.5] },
+					{ color: 0xffffff, intensity: 200, position: [14, -5, -57.5] },
+					{ color: 0xffffff, intensity: 100, position: [21, 3, -70] },
+					{ color: 0xffffff, intensity: 100, position: [21, 3, -45] },
+				];
+
+				lightConfigs2.forEach(config => {
+					const light = new THREE.PointLight(config.color, config.intensity, 0);
+					light.position.set(...config.position);
+					light.visible = false; // Les lumières du groupe 2 commencent désactivées
+					lightsGroup2.push(light); // Ajouter au groupe 2
+					scene.add(light);
+				});
+
+				// Groupe 3 : Lumières finales
+				const lightConfigs3 = [
+					{ color: 0xffffff, intensity: 100, position: [4, 3, -80] },
+					{ color: 0xffffff, intensity: 100, position: [4, 3, -115] },
+					{ color: 0xffffff, intensity: 200, position: [14, 5, -92.5] },
+					{ color: 0xffffff, intensity: 200, position: [14, -5, -92.5] },
+					{ color: 0xffffff, intensity: 100, position: [21, 3, -80] },
+					{ color: 0xffffff, intensity: 100, position: [21, 3, -115] },
+					{ color: 0x00ff00, intensity: 25, position: [ 2, 2, -86.75] },
+					{ color: 0x00ff00, intensity: 25, position: [ -10, 2, -100] },
+				];
+
+				lightConfigs3.forEach(config => {
+					const light = new THREE.PointLight(config.color, config.intensity, 0);
+					light.position.set(...config.position);
+					light.visible = false; // Les lumières du groupe 3 commencent désactivées
+					lightsGroup3.push(light); // Ajouter au groupe 3
+					scene.add(light);
+				});
+				
+				// Groupe 4 :
+				const lightConfigs4 = [
+					{ color: 0x00ff00, intensity: 25, position: [ 2, 2, -86.75] },
+					{ color: 0x00ff00, intensity: 25, position: [ -10, 2, -100] },
+					{ color: 0xffffff, intensity: 25, position: [ -4, 2, -93.25] },
+
+				];
+
+				lightConfigs4.forEach(config => {
+					const light = new THREE.PointLight(config.color, config.intensity, 0);
+					light.position.set(...config.position);
+					light.visible = false; // Les lumières du groupe 4 commencent désactivées
+					lightsGroup4.push(light); // Ajouter au groupe 4
+					scene.add(light);
+				});
+
+				const lightConfigs5 = [
+					
+					{ color: 0xffffff, intensity: 25, position: [ -11, 2, -100] },
+					{ color: 0xffffff, intensity: 25, position: [ -10, 2, -100] },
+					{ color: 0xffffff, intensity: 25, position: [ -20, 2, -106] },
+					{ color: 0xffffff, intensity: 25, position: [ -23, 2, -111.5] },
+					{ color: 0xffffff, intensity: 25, position: [ -35, 2, -113] },
+
+				]
+
+				lightConfigs5.forEach(config => {
+					const light = new THREE.PointLight(config.color, config.intensity, 0);
+					light.position.set(...config.position);
+					light.visible = false; // Les lumières du groupe 5 commencent désactivées
+					lightsGroup5.push(light); // Ajouter au groupe 5
+					scene.add(light);
+				});
+
+				const lightConfigs6 = [
+				{ color: 0x00ff00, intensity: 10, position: [ -45.5, 2, -113] },
+				{ color: 0xff0000, intensity: 10, position: [ -26, 2, -98.5] },
+				]
+
+				lightConfigs6.forEach(config => {
+					const light = new THREE.PointLight(config.color, config.intensity, 0);
+					light.position.set(...config.position);
+					light.visible = false; // Les lumières du groupe 5 commencent désactivées
+					lightsGroup6.push(light); // Ajouter au groupe 5
+					scene.add(light);
+				});
+
+			}
+
+			function infinitydot() {
+  				windowObjectReference = window.open("./index.html");
+			}
+
+			function toggleLightsBasedOnPosition() {
+				const { x,y,z } = camera.position;
+
+				
+				if (x >= -46 && x <= -44) {
+					if (z >= -114 && z <= -111 ) {
+
+						infinitydot()
+						
+					}
+				}
+
+				if (x <= 3 && z >= -80) {
+					// Activer le groupe 1
+					lightsGroup1.forEach(light => light.visible = true);
+
+					// Désactiver le groupe 2
+					lightsGroup2.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 3
+					lightsGroup3.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 4
+					lightsGroup4.forEach(light => light.visible = false);
+
+					//Désactiver le groupe 5
+					lightsGroup5.forEach(light => light.visible = false);
+				}
+
+				if (x >= 3 && z >= -75) {
+					// Désactiver le groupe 1
+					lightsGroup1.forEach(light => light.visible = false);
+
+					// Activer le groupe 2
+					lightsGroup2.forEach(light => light.visible = true);
+					
+					// Désactiver le groupe 3
+					lightsGroup3.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 4
+					lightsGroup4.forEach(light => light.visible = false);
+
+					//Désactiver le groupe 5
+					lightsGroup5.forEach(light => light.visible = false);
+				} 				
+
+				if (x >= 3 && z <= -75) {
+					// Désactiver le groupe 1
+					lightsGroup1.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 2
+					lightsGroup2.forEach(light => light.visible = false);
+
+					// Activer le groupe 3
+					lightsGroup3.forEach(light => light.visible = true);
+
+					// Désactiver le groupe 4
+					lightsGroup4.forEach(light => light.visible = false);
+
+					//Désactiver le groupe 5
+					lightsGroup5.forEach(light => light.visible = false);
+				}
+
+				if (x <=3 && z <= -80) {
+					// Désactiver le groupe 1
+					lightsGroup1.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 2
+					lightsGroup2.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 3
+					lightsGroup3.forEach(light => light.visible = false);
+					
+					// Désactiver le groupe 4
+					lightsGroup4.forEach(light => light.visible = true);
+					
+					//Désactiver le groupe 5
+					lightsGroup5.forEach(light => light.visible = false);
+				}
+
+				if(x <= -11 && z <= -80) {
+					// Désactiver le groupe 1
+					lightsGroup1.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 2
+					lightsGroup2.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 3
+					lightsGroup3.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 4
+					lightsGroup4.forEach(light => light.visible = false);
+
+					// Activer le groupe 5
+					lightsGroup5.forEach(light => light.visible = true);
+
+					// Désactiver le groupe 6
+					lightsGroup6.forEach(light => light.visible = false);
+				}
+
+				if (x <= -23 && z <= -80) {
+					// Désactiver le groupe 1
+					lightsGroup1.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 2
+					lightsGroup2.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 3
+					lightsGroup3.forEach(light => light.visible = false);
+
+					// Désactiver le groupe 4
+					lightsGroup4.forEach(light => light.visible = false);
+
+					// Activer le groupe 5
+					lightsGroup5.forEach(light => light.visible = true);
+
+					// Activer le groupe 6
+					lightsGroup6.forEach(light => light.visible = true);
+				}
+			}
+
+			
+			// Variables pour gérer les objets suiveurs
+			const followers = [];
+			const FOLLOW_RADIUS = 10; // Rayon du périmètre
+			const followerSpeed = 5; // Vitesse des objets suiveurs
+
+			// Création des objets suiveurs
+			function createFollowers() {
+				const predefinedPositions = [
+					new THREE.Vector3(-2, 0.5, -100),
+					new THREE.Vector3(-9, 0.5, -81),
+					new THREE.Vector3(-2, 0.5, -102),
+					new THREE.Vector3(-8, 0.5, -103),
+					new THREE.Vector3(-4, 0.5, -106),
+					new THREE.Vector3(-8, 0.5, -83),
+					new THREE.Vector3(-5, 0.5, -101),
+					new THREE.Vector3(-6, 0.5, -83),
+					new THREE.Vector3(-3, 0.5, -103),
+					new THREE.Vector3(-3, 0.5, -104),
+					new THREE.Vector3(-25, 0.5, -100),
+					new THREE.Vector3(-25, 0.5, -101),
+					new THREE.Vector3(-25, 0.5, -102),
+					new THREE.Vector3(-25, 0.5, -103),
+				
+				];
+
+				predefinedPositions.forEach((position, index) => {
+					const geometry = new THREE.SphereGeometry(0.2, 16, 16);
+					const material = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+					const follower = new THREE.Mesh(geometry, material);
+
+					// Définir la position de l'objet suiveur
+					follower.position.copy(position);
+
+					followers.push(follower);
+					scene.add(follower);
+				});
+			}
+
+			function updateFollowerPlayerCollisions() {
+				followers.forEach((follower) => {
+					const distance = follower.position.distanceTo(playerCollider.end); // Position du joueur
+					const collisionDistance = 0.55; // Rayon du joueur (0.35) + rayon du suiveur (0.2)
+
+					if (distance < collisionDistance) {
+						// Calculer la direction de répulsion
+						const overlap = collisionDistance - distance;
+						const direction = new THREE.Vector3()
+							.subVectors(follower.position, playerCollider.end)
+							.normalize();
+
+						// Appliquer une correction pour éviter le chevauchement
+						follower.position.addScaledVector(direction, overlap);
+					}
+				});
+			}
+
+			// Mise à jour des objets suiveurs
+			function updateFollowers(deltaTime) {
+				followers.forEach((follower) => {
+					const distance = follower.position.distanceTo(camera.position);
+					if (distance < FOLLOW_RADIUS) {
+						// Calcule la direction vers le joueur
+						const direction = new THREE.Vector3().subVectors(camera.position, follower.position);
+						direction.normalize();
+
+						// Déplace le suiveur vers le joueur (uniquement sur X et Z)
+						follower.position.addScaledVector(direction, followerSpeed * deltaTime);
+					}
+
+					// Empêche le déplacement sur l'axe Y
+					follower.position.y = 0.4; // Fixe Y à 0.5 (ou la valeur souhaitée)
+
+					// Gestion des collisions basique
+					const sphere = new THREE.Sphere(follower.position.clone(), 0.2);
+					const result = worldOctree.sphereIntersect(sphere);
+
+					if (result) {
+						// Corrige la position si une collision est détectée
+						follower.position.addScaledVector(result.normal, result.depth);
+						follower.position.y = 0.4; // Réaffirme la contrainte sur Y après correction
+					}
+				});
+			}
+
+			// Initialisation
+			createFollowers();
+
+			function updateFollowerCollisions() {
+				for (let i = 0; i < followers.length; i++) {
+					for (let j = i + 1; j < followers.length; j++) {
+						const followerA = followers[i];
+						const followerB = followers[j];
+
+						const distance = followerA.position.distanceTo(followerB.position);
+						const minDistance = 0.4; // Somme des rayons (exemple : 0.2 + 0.2)
+
+						if (distance < minDistance) {
+							// Calculer la direction de répulsion
+							const overlap = minDistance - distance;
+							const direction = new THREE.Vector3()
+								.subVectors(followerA.position, followerB.position)
+								.normalize();
+
+							// Appliquer une correction pour les séparer
+							const correction = direction.multiplyScalar(overlap / 2);
+							followerA.position.add(correction);
+							followerB.position.add(correction.negate());
+						}
+					}
+				}
+			}
+
+			// Animation
+			function animate() {
+				const deltaTime = Math.min(0.05, clock.getDelta()) / STEPS_PER_FRAME;
+
+				for (let i = 0; i < STEPS_PER_FRAME; i++) {
+					controls(deltaTime);
+					updatePlayer(deltaTime);
+					updateFollowers(deltaTime); // Met à jour les suiveurs
+					updateFollowerCollisions(); // Gère les collisions entre les suiveurs
+					updateFollowerPlayerCollisions(); // Gère les collisions entre les suiveurs et le joueur
+					teleportPlayerIfOob();
+					toggleLightsBasedOnPosition();
+				}
+
+				renderer.render(scene, camera);
+
+			}
+
+
+
+		</script>
+    <style>
+        /* Suppression des marges et paddings */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html, body {
+            height: 100%;
+            overflow: hidden; /* Empêche le défilement */
+        }
+        #container {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+	</body>
+</html>
